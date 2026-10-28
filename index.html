@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Student Performance Predictor</title>
+<style>
+:root{--bg:#f3f6f4;--card:#fff;--ink:#17261f;--mute:#5d6f66;--line:#d5ded9;--acc:#1f6f54;--bad:#b3402f;--good:#1f6f54}
+@media(prefers-color-scheme:dark){:root{--bg:#101815;--card:#18231e;--ink:#e6efe9;--mute:#93a69b;--line:#2b3a33;--acc:#5fc79d;--bad:#e5806f;--good:#5fc79d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Georgia,"Times New Roman",serif;line-height:1.5}
+.wrap{max-width:760px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:1.9rem;margin:0 0 4px}
+h2{font-size:1.15rem;margin:0 0 12px}
+p.sub{color:var(--mute);margin:0 0 20px;font-family:system-ui,Arial,sans-serif;font-size:.95rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px;font-family:system-ui,Arial,sans-serif}
+label{display:flex;justify-content:space-between;font-size:.92rem;margin-top:14px}
+label b{color:var(--acc)}
+input[type=range]{width:100%;accent-color:var(--acc)}
+button{background:var(--acc);color:var(--bg);border:0;border-radius:8px;padding:12px 18px;font-size:1rem;font-weight:600;width:100%;margin-top:20px;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.score{font-family:Georgia,serif;font-size:3.2rem;line-height:1}
+.verdict{font-weight:700;margin-top:6px}
+.row{display:grid;grid-template-columns:130px 1fr 52px;gap:8px;align-items:center;font-size:.85rem;margin:6px 0}
+.bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.stats div{border:1px solid var(--line);border-radius:8px;padding:10px}
+.stats strong{display:block;font-size:1.3rem;font-family:Georgia,serif}
+.stats span{font-size:.78rem;color:var(--mute)}
+ul{margin:8px 0 0;padding-left:20px;font-size:.92rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Student Performance Predictor</h1>
+<p class="sub">A linear regression model trained in your browser on 400 student records. Adjust the sliders and predict the final score.</p>
+
+<div class="card">
+<h2>Student details</h2>
+<div id="inputs"></div>
+<button id="go">Predict performance</button>
+</div>
+
+<div class="card" id="result" hidden aria-live="polite">
+<h2>Prediction</h2>
+<div class="score" id="score"></div>
+<div class="verdict" id="verdict"></div>
+<ul id="tips"></ul>
+</div>
+
+<div class="card">
+<h2>Model quality (on 80 unseen students)</h2>
+<div class="stats">
+<div><strong id="r2">–</strong><span>R² score</span></div>
+<div><strong id="mae">–</strong><span>Mean error (marks)</span></div>
+<div><strong id="acc">–</strong><span>Pass/Fail accuracy</span></div>
+</div>
+</div>
+
+<div class="card">
+<h2>What the model learned</h2>
+<div id="weights"></div>
+</div>
+</div>
+
+<script>
+// ---------- Features ----------
+const F=[
+ {k:"study",n:"Study hours / day",min:0,max:8,step:.5,def:3},
+ {k:"att",n:"Attendance (%)",min:30,max:100,step:1,def:75},
+ {k:"prev",n:"Previous marks (%)",min:20,max:100,step:1,def:60},
+ {k:"assign",n:"Assignments done (%)",min:0,max:100,step:5,def:70},
+ {k:"sleep",n:"Sleep hours / night",min:4,max:10,step:.5,def:7}
+];
+
+// ---------- Synthetic dataset (seeded so results are repeatable) ----------
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rand=rng(42);
+const gauss=()=>{let u=0;for(let i=0;i<6;i++)u+=rand();return(u-3)*1.4};
+function makeData(n){
+ const d=[];
+ for(let i=0;i<n;i++){
+  const x={study:+(rand()*8).toFixed(1),att:30+rand()*70,prev:20+rand()*80,assign:rand()*100,sleep:4+rand()*6};
+  let y=5+4.2*x.study+0.22*x.att+0.33*x.prev+0.12*x.assign-0.9*Math.abs(x.sleep-7.5)+gauss()*4;
+  d.push({x:F.map(f=>x[f.k]),y:Math.max(0,Math.min(100,y))});
+ }
+ return d;
+}
+const data=makeData(400),train=data.slice(0,320),test=data.slice(320);
+
+// ---------- Linear regression with gradient descent ----------
+const m=F.length;
+const mean=F.map((_,j)=>train.reduce((s,r)=>s+r.x[j],0)/train.length);
+const sd=F.map((_,j)=>Math.sqrt(train.reduce((s,r)=>s+(r.x[j]-mean[j])**2,0)/train.length));
+const norm=x=>x.map((v,j)=>(v-mean[j])/sd[j]);
+let w=Array(m).fill(0),b=train.reduce((s,r)=>s+r.y,0)/train.length;
+const X=train.map(r=>norm(r.x));
+for(let ep=0;ep<1500;ep++){
+ const gw=Array(m).fill(0);let gb=0;
+ X.forEach((xi,i)=>{
+  const e=b+xi.reduce((s,v,j)=>s+v*w[j],0)-train[i].y;
+  gb+=e;xi.forEach((v,j)=>gw[j]+=e*v);
+ });
+ b-=0.1*gb/X.length;w=w.map((wj,j)=>wj-0.1*gw[j]/X.length);
+}
+const predict=x=>Math.max(0,Math.min(100,b+norm(x).reduce((s,v,j)=>s+v*w[j],0)));
+
+// ---------- Evaluate ----------
+const ys=test.map(r=>r.y),ps=test.map(r=>predict(r.x)),ym=ys.reduce((a,c)=>a+c)/ys.length;
+const ssr=ys.reduce((s,y,i)=>s+(y-ps[i])**2,0),sst=ys.reduce((s,y)=>s+(y-ym)**2,0);
+document.getElementById("r2").textContent=(1-ssr/sst).toFixed(2);
+document.getElementById("mae").textContent=(ys.reduce((s,y,i)=>s+Math.abs(y-ps[i]),0)/ys.length).toFixed(1);
+document.getElementById("acc").textContent=Math.round(100*ys.filter((y,i)=>(y>=40)===(ps[i]>=40)).length/ys.length)+"%";
+
+// ---------- UI ----------
+const box=document.getElementById("inputs");
+F.forEach(f=>{
+ box.insertAdjacentHTML("beforeend",`<label for="${f.k}">${f.n}<b id="v_${f.k}">${f.def}</b></label><input type="range" id="${f.k}" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.def}">`);
+ document.getElementById(f.k).oninput=e=>document.getElementById("v_"+f.k).textContent=e.target.value;
+});
+const maxW=Math.max(...w.map(Math.abs));
+document.getElementById("weights").innerHTML=F.map((f,j)=>`<div class="row"><span>${f.n.split(" (")[0]}</span><div class="bar"><i style="width:${Math.max(0,w[j])/maxW*100}%"></i></div><span>${w[j].toFixed(1)}</span></div>`).join("")+`<p class="sub" style="margin-top:10px">Bar length shows how strongly each factor raises the predicted score.</p>`;
+
+document.getElementById("go").onclick=()=>{
+ const x=F.map(f=>+document.getElementById(f.k).value),p=predict(x);
+ document.getElementById("result").hidden=false;
+ document.getElementById("score").textContent=p.toFixed(1)+" / 100";
+ const v=document.getElementById("verdict");
+ const grade=p>=75?"Distinction":p>=60?"First class":p>=40?"Pass":"At risk of failing";
+ v.textContent=grade;v.style.color=p>=40?"var(--good)":"var(--bad)";
+ const tips=[];
+ if(x[0]<3)tips.push("Raise study time to at least 3 hours a day.");
+ if(x[1]<75)tips.push("Attendance below 75% is costing marks. Aim higher.");
+ if(x[3]<70)tips.push("Complete more assignments; they add steady marks.");
+ if(x[4]<6||x[4]>9)tips.push("Aim for 7 to 8 hours of sleep.");
+ if(!tips.length)tips.push("Strong habits. Keep this routine going.");
+ document.getElementById("tips").innerHTML=tips.map(t=>`<li>${t}</li>`).join("");
+ document.getElementById("result").scrollIntoView({behavior:"smooth"});
+};
+</script>
+</body>
+</html>
